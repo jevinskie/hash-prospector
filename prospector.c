@@ -20,6 +20,12 @@
 #define HF_PAGE_SIZE (16*1024)
 #endif
 
+#ifdef __aarch64__
+#define HAVE_BREV 1
+#else
+#define HAVE_BREV
+#endif
+
 #define countof(a) ((int)(sizeof(a) / sizeof(0[a])))
 
 static uint64_t
@@ -46,6 +52,12 @@ enum hf_type {
     HF32_XORR, // x ^= x >> const5
     HF32_ADDL, // x += x << const5
     HF32_SUBL, // x -= x << const5
+#if HAVE_BREV
+    HF32_BREV, // x = bitreverse(x)
+    HF32_LAST = HF32_BREV,
+#else
+    HF32_LAST = HF32_SUBL,
+#endif
     /* 64 bits */
     HF64_XOR,
     HF64_MUL,
@@ -57,6 +69,12 @@ enum hf_type {
     HF64_XORR,
     HF64_ADDL,
     HF64_SUBL,
+#if HAVE_BREV
+    HF64_BREV,
+    HF64_LAST = HF64_BREV,
+#else
+    HF64_LAST = HF64_SUBL,
+#endif
 };
 
 static const char hf_names[][8] = {
@@ -70,6 +88,9 @@ static const char hf_names[][8] = {
     [HF32_XORR] = "32xorr",
     [HF32_ADDL] = "32addl",
     [HF32_SUBL] = "32subl",
+#if HAVE_BREV
+    [HF32_BREV] = "32brev",
+#endif
     [HF64_XOR]  = "64xor",
     [HF64_MUL]  = "64mul",
     [HF64_ADD]  = "64add",
@@ -80,7 +101,16 @@ static const char hf_names[][8] = {
     [HF64_XORR] = "64xorr",
     [HF64_ADDL] = "64addl",
     [HF64_SUBL] = "64subl",
+#if HAVE_BREV
+    [HF64_BREV] = "64brev",
+#endif
 };
+
+#if HAVE_BREV
+#define HF_NUM_OPS 10
+#else
+#define HF_NUM_OPS 9
+#endif
 
 #define FOP_LOCKED  (1 << 0)
 struct hf_op {
@@ -126,6 +156,10 @@ hf_randomize(struct hf_op *op, uint64_t s[2])
         case HF64_NOT:
         case HF32_BSWAP:
         case HF64_BSWAP:
+#if HAVE_BREV
+        case HF32_BREV:
+        case HF64_BREV:
+#endif
             op->constant = 0;
             break;
         case HF32_XOR:
@@ -167,7 +201,7 @@ hf_gen(struct hf_op *op, uint64_t s[2], int flags)
 {
     uint64_t r = xoroshiro128plus(s);
     int min = flags & F_TINY ? 3 : 0;
-    op->type = (r % (9 - min)) + min + (flags & F_U64 ? 9 : 0);
+    op->type = (r % (HF_NUM_OPS - min)) + min + (flags & F_U64 ? HF_NUM_OPS : 0);
     hf_randomize(op, s);
 }
 
@@ -189,6 +223,10 @@ hf_type_valid(enum hf_type a, enum hf_type b)
         case HF64_MUL:
         case HF64_ADD:
         case HF64_ROT:
+#if HAVE_BREV
+        case HF32_BREV:
+        case HF64_BREV:
+#endif
             return a != b;
         case HF32_XORL:
         case HF32_XORR:
@@ -239,6 +277,14 @@ hf_print(const struct hf_op *op, char *buf)
         case HF64_BSWAP:
             sprintf(buf, "x  = __builtin_bswap64(x);");
             break;
+#if HAVE_BREV
+        case HF32_BREV:
+            sprintf(buf, "x  = __builtin_bitreverse32(x);");
+            break;
+        case HF64_BREV:
+            sprintf(buf, "x  = __builtin_bitreverse64(x);");
+            break;
+#endif
         case HF32_XOR:
             sprintf(buf, "x ^= 0x%08llx;", c);
             break;
@@ -293,7 +339,7 @@ hf_print(const struct hf_op *op, char *buf)
 static void
 hf_printfunc(const struct hf_op *ops, int n, FILE *f)
 {
-    if (ops[0].type <= HF32_SUBL)
+    if (ops[0].type <= HF32_LAST)
         fprintf(f, "uint32_t\nhash(uint32_t x)\n{\n");
     else
         fprintf(f, "uint64_t\nhash(uint64_t x)\n{\n");
@@ -305,6 +351,178 @@ hf_printfunc(const struct hf_op *ops, int n, FILE *f)
     fprintf(f, "    return x;\n}\n");
 }
 
+#ifdef __aarch64__
+
+/* Helper function to emit a 32-bit instruction into the buffer */
+static void
+emit32(unsigned char **buf, uint32_t instr)
+{
+    *(uint32_t *)*buf = instr;
+    *buf += 4;
+}
+
+/* Load a 32-bit or 64-bit constant into w1/x1 using movz and movk */
+static void
+emit_load_constant(unsigned char **buf, uint64_t constant, int is64)
+{
+    if (is64) {
+        uint16_t parts[4] = {
+            constant & 0xffff,
+            (constant >> 16) & 0xffff,
+            (constant >> 32) & 0xffff,
+            (constant >> 48) & 0xffff
+        };
+        emit32(buf, 0xd2800001 | (parts[0] << 5));  // movz x1, #parts[0], lsl #0
+        if (parts[1]) {
+            emit32(buf, 0xf2a00001 | (parts[1] << 5));  // movk x1, #parts[1], lsl #16
+        }
+        if (parts[2]) {
+            emit32(buf, 0xf2c00001 | (parts[2] << 5));  // movk x1, #parts[2], lsl #32
+        }
+        if (parts[3]) {
+            emit32(buf, 0xf2e00001 | (parts[3] << 5));  // movk x1, #parts[3], lsl #48
+        }
+    } else {
+        uint16_t low = constant & 0xffff;
+        uint16_t high = (constant >> 16) & 0xffff;
+        emit32(buf, 0x52800001 | (low << 5));  // movz w1, #low, lsl #0
+        if (high) {
+            emit32(buf, 0x72a00001 | (high << 5));  // movk w1, #high, lsl #16
+        }
+    }
+}
+
+/* Compile hash function to AArch64 machine code */
+static unsigned char *
+hf_compile(const struct hf_op *ops, int n, unsigned char *buf)
+{
+    unsigned char *p = buf;
+    int is64 = ops[0].type > HF32_LAST;  // 32-bit or 64-bit function
+
+    for (int i = 0; i < n; i++) {
+        switch (ops[i].type) {
+            case HF32_NOT:
+                emit32(&p, 0x2a2003e0);  // mvn w0, w0
+                break;
+            case HF64_NOT:
+                emit32(&p, 0xaa2003e0);  // mvn x0, x0
+                break;
+            case HF32_BSWAP:
+                emit32(&p, 0x5ac00800);  // rev32 w0, w0
+                break;
+            case HF64_BSWAP:
+                emit32(&p, 0xdac00c00);  // rev64 x0, x0
+                break;
+            case HF32_BREV:
+                emit32(&p, 0x5ac00000);  // rbit w0, w0
+                break;
+            case HF64_BREV:
+                emit32(&p, 0xdac00000);  // rbit x0, x0
+                break;
+            case HF32_XOR:
+                emit_load_constant(&p, ops[i].constant, is64);
+                emit32(&p, 0x4a010000);  // eor w0, w0, w1
+                break;
+            case HF64_XOR:
+                emit_load_constant(&p, ops[i].constant, is64);
+                emit32(&p, 0xca010000);  // eor x0, x0, x1
+                break;
+            case HF32_ADD:
+                emit_load_constant(&p, ops[i].constant, is64);
+                emit32(&p, 0x0b010000);  // add w0, w0, w1
+                break;
+            case HF64_ADD:
+                emit_load_constant(&p, ops[i].constant, is64);
+                emit32(&p, 0x8b010000);  // add x0, x0, x1
+                break;
+            case HF32_MUL:
+                emit_load_constant(&p, ops[i].constant, is64);
+                emit32(&p, 0x1b010000);  // mul w0, w0, w1
+                break;
+            case HF64_MUL:
+                emit_load_constant(&p, ops[i].constant, is64);
+                emit32(&p, 0x9b010000);  // mul x0, x0, x1
+                break;
+            case HF32_ROT:
+                {
+                    uint32_t imm = 32 - ops[i].constant;  // Rotate left = right by (32 - k)
+                    emit32(&p, 0x13800000 | (imm << 10));  // extr w0, w0, w0, #imm
+                }
+                break;
+            case HF64_ROT:
+                {
+                    uint32_t imm = 64 - ops[i].constant;  // Rotate left = right by (64 - k)
+                    emit32(&p, 0x93c00000 | (imm << 10));  // extr x0, x0, x0, #imm
+                }
+                break;
+            case HF32_XORL:
+                {
+                    uint32_t imm = ops[i].constant;
+                    uint32_t imms = 31 - imm;
+                    emit32(&p, 0x53e00001 | (imms << 10));  // ubfm w1, w0, #0, #imms (lsl w1, w0, #imm)
+                    emit32(&p, 0x4a010000);  // eor w0, w0, w1
+                }
+                break;
+            case HF64_XORL:
+                {
+                    uint32_t imm = ops[i].constant;
+                    uint32_t imms = 63 - imm;
+                    emit32(&p, 0xd3e00001 | (imms << 10));  // ubfm x1, x0, #0, #imms (lsl x1, x0, #imm)
+                    emit32(&p, 0xca010000);  // eor x0, x0, x1
+                }
+                break;
+            case HF32_XORR:
+                {
+                    uint32_t imm = ops[i].constant;
+                    emit32(&p, 0x53e07c01 | (imm << 16));  // ubfm w1, w0, #imm, #31 (lsr w1, w0, #imm)
+                    emit32(&p, 0x4a010000);  // eor w0, w0, w1
+                }
+                break;
+            case HF64_XORR:
+                {
+                    uint32_t imm = ops[i].constant;
+                    emit32(&p, 0xd3e07c01 | (imm << 16));  // ubfm x1, x0, #imm, #63 (lsr x1, x0, #imm)
+                    emit32(&p, 0xca010000);  // eor x0, x0, x1
+                }
+                break;
+            case HF32_ADDL:
+                {
+                    uint32_t imm = ops[i].constant;
+                    uint32_t imms = 31 - imm;
+                    emit32(&p, 0x53e00001 | (imms << 10));  // ubfm w1, w0, #0, #imms (lsl w1, w0, #imm)
+                    emit32(&p, 0x0b010000);  // add w0, w0, w1
+                }
+                break;
+            case HF64_ADDL:
+                {
+                    uint32_t imm = ops[i].constant;
+                    uint32_t imms = 63 - imm;
+                    emit32(&p, 0xd3e00001 | (imms << 10));  // ubfm x1, x0, #0, #imms (lsl x1, x0, #imm)
+                    emit32(&p, 0x8b010000);  // add x0, x0, x1
+                }
+                break;
+            case HF32_SUBL:
+                {
+                    uint32_t imm = ops[i].constant;
+                    uint32_t imms = 31 - imm;
+                    emit32(&p, 0x53e00001 | (imms << 10));  // ubfm w1, w0, #0, #imms (lsl w1, w0, #imm)
+                    emit32(&p, 0x4b010000);  // sub w0, w0, w1
+                }
+                break;
+            case HF64_SUBL:
+                {
+                    uint32_t imm = ops[i].constant;
+                    uint32_t imms = 63 - imm;
+                    emit32(&p, 0xd3e00001 | (imms << 10));  // ubfm x1, x0, #0, #imms (lsl x1, x0, #imm)
+                    emit32(&p, 0xcb010000);  // sub x0, x0, x1
+                }
+                break;
+        }
+    }
+    emit32(&p, 0xd65f03c0);  // ret
+    return p;
+}
+#elif defined(__x86_64__)
 static unsigned char *
 hf_compile(const struct hf_op *ops, int n, unsigned char *buf)
 {
@@ -548,6 +766,9 @@ hf_compile(const struct hf_op *ops, int n, unsigned char *buf)
     *buf++ = 0xc3;
     return buf;
 }
+#else
+#error unsupported arch
+#endif
 
 static void *
 execbuf_alloc(void)
@@ -756,6 +977,10 @@ parse_operand(struct hf_op *op, char *buf)
         case HF64_NOT:
         case HF32_BSWAP:
         case HF64_BSWAP:
+#if HAVE_BREV
+        case HF32_BREV:
+        case HF64_BREV:
+#endif
             return 0;
         case HF32_XOR:
         case HF32_MUL:
@@ -1011,6 +1236,7 @@ main(int argc, char **argv)
 
         /* Evaluate */
         double score;
+        hf_printfunc(ops, nops, stdout);
         hf_compile(ops, nops, buf);
         execbuf_lock(buf);
         if (flags & F_U64) {
