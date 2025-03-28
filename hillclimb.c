@@ -69,7 +69,7 @@ getopt(int argc, char * const argv[], const char *optstring)
     }
 }
 
-#if defined(__unix__)
+#if defined(__unix__) || defined(__APPLE__)
 #include <sys/time.h>
 uint64_t
 uepoch(void)

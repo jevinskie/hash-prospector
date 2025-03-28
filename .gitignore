@@ -1,2 +1,7 @@
 prospector
+hillclimb
+hp16
+genetic
 *.so
+*.dylib
+*.dSYM/
