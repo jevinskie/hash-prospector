@@ -12,7 +12,13 @@
 #include <sys/mman.h>
 #include <sys/time.h>
 
+#ifndef __APPLE__
 #define ABI __attribute__((sysv_abi))
+#define HF_PAGE_SIZE (4*1024)
+#else
+#define ABI
+#define HF_PAGE_SIZE (16*1024)
+#endif
 
 #define countof(a) ((int)(sizeof(a) / sizeof(0[a])))
 
@@ -82,6 +88,32 @@ struct hf_op {
     uint64_t constant;
     int flags;
 };
+
+#ifdef __APPLE__
+#include <pthread.h>
+#include <libkern/OSCacheControl.h>
+
+static void
+hf_jit_exec(void)
+{
+    pthread_jit_write_protect_np(true);
+}
+
+static void
+hf_jit_write(void)
+{
+    pthread_jit_write_protect_np(false);
+}
+
+static void
+hf_jit_flush(void *buf, size_t sz) {
+    sys_icache_invalidate(buf, sz);
+}
+#else
+static void hf_jit_exec(void) {}
+static void hf_jit_write(void) {}
+static void hf_jit_flush(void *buf, size_t sz) {}
+#endif
 
 /* Randomize the constants of the given hash operation.
  */
@@ -522,7 +554,7 @@ execbuf_alloc(void)
 {
     int prot = PROT_READ | PROT_WRITE;
     int flags = MAP_PRIVATE | MAP_ANONYMOUS;
-    void *p = mmap(NULL, 4096, prot, flags, -1, 0);
+    void *p = mmap(NULL, HF_PAGE_SIZE, prot, flags, -1, 0);
     if (p == MAP_FAILED) {
         fprintf(stderr, "prospector: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
@@ -530,6 +562,7 @@ execbuf_alloc(void)
     return p;
 }
 
+#ifndef __APPLE__
 static enum {
     WXR_UNKNOWN, WXR_ENABLED, WXR_DISABLED
 } wxr_enabled = WXR_UNKNOWN;
@@ -539,14 +572,14 @@ execbuf_lock(void *buf)
 {
     switch (wxr_enabled) {
         case WXR_UNKNOWN:
-            if (!mprotect(buf, 4096, PROT_READ | PROT_WRITE | PROT_EXEC)) {
+            if (!mprotect(buf, HF_PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC)) {
                 wxr_enabled = WXR_DISABLED;
                 return;
             }
             wxr_enabled = WXR_ENABLED;
             /* FALLTHROUGH */
         case WXR_ENABLED:
-            if (mprotect(buf, 4096, PROT_READ | PROT_EXEC)) {
+            if (mprotect(buf, HF_PAGE_SIZE, PROT_READ | PROT_EXEC)) {
                 fprintf(stderr,
                         "prospector: mprotect(PROT_EXEC) failed: %s\n",
                         strerror(errno));
@@ -557,7 +590,22 @@ execbuf_lock(void *buf)
             break;
     }
 }
+#else
+static void
+execbuf_lock(void *buf)
+{
+    if (mprotect(buf, HF_PAGE_SIZE, PROT_READ | PROT_EXEC)) {
+        fprintf(stderr,
+                "prospector: mprotect(PROT_EXEC) failed: %s\n",
+                strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+    hf_jit_exec();
+    hf_jit_flush(buf, HF_PAGE_SIZE);
+}
+#endif
 
+#ifndef __APPLE__
 static void
 execbuf_unlock(void *buf)
 {
@@ -565,12 +613,25 @@ execbuf_unlock(void *buf)
         case WXR_UNKNOWN:
             abort();
         case WXR_ENABLED:
-            mprotect(buf, 4096, PROT_READ | PROT_WRITE);
+            mprotect(buf, HF_PAGE_SIZE, PROT_READ | PROT_WRITE);
             break;
         case WXR_DISABLED:
             break;
     }
 }
+#else
+static void
+execbuf_unlock(void *buf)
+{
+    hf_jit_write();
+    if (mprotect(buf, HF_PAGE_SIZE, PROT_READ | PROT_WRITE)) {
+        fprintf(stderr,
+                "prospector: mprotect(PROT_WRITE) failed: %s\n",
+                strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+}
+#endif
 
 /* Higher quality is slower but has more consistent results. */
 static int score_quality = 18;
