@@ -1,3 +1,6 @@
+#undef NDEBUG
+#include <assert.h>
+
 #define _DEFAULT_SOURCE // MAP_ANONYMOUS
 #include <math.h>
 #include <errno.h>
@@ -5,6 +8,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdbool.h>
 
 #include <fcntl.h>
 #include <dlfcn.h>
@@ -392,6 +396,29 @@ emit_load_constant(unsigned char **buf, uint64_t constant, int is64)
     }
 }
 
+// UBFM <Rd>, <Rn>, #<immr>, #<imms>
+// If <imms> is greater than or equal to <immr>, this copies a bitfield of (<imms>-<immr>+1) bits starting from bit position <immr> in the source register to the least significant bits of the destination register.
+// If <imms> is less than <immr>, this copies a bitfield of (<imms>+1) bits from the least significant bits of the source register to bit position (regsize-<immr>) of the destination register, where regsize is the destination register size of 32 or 64 bits.
+// In both cases, the destination bits below and above the bitfield are set to zero.
+
+static uint32_t gen_lsl(uint32_t rd, uint32_t rn, uint32_t shift, bool is64) {
+    assert(rd <= 30);
+    assert(rn <= 30);
+    assert(shift <= 31);
+    uint32_t instr = is64 ? 0xd3400000 : 0x53000000;
+    instr |= rd;
+    instr |= rn << 5;
+    uint32_t immr, imms;
+    if (is64) {
+
+    } else {
+
+    }
+    instr |= imms << 10;
+    instr |= immr << 16;
+    return instr;
+}
+
 /* Compile hash function to AArch64 machine code */
 static unsigned char *
 hf_compile(const struct hf_op *ops, int n, unsigned char *buf)
@@ -459,7 +486,7 @@ hf_compile(const struct hf_op *ops, int n, unsigned char *buf)
                 {
                     uint32_t imm = ops[i].constant;
                     uint32_t imms = 31 - imm;
-                    emit32(&p, 0x53e00001 | (imms << 10));  // ubfm w1, w0, #0, #imms (lsl w1, w0, #imm)
+                    emit32(&p, 0x53007c01 | (imms << 10));  // ubfm w1, w0, #0, #imms (lsl w1, w0, #imm)
                     emit32(&p, 0x4a010000);  // eor w0, w0, w1
                 }
                 break;
@@ -505,7 +532,7 @@ hf_compile(const struct hf_op *ops, int n, unsigned char *buf)
                 {
                     uint32_t imm = ops[i].constant;
                     uint32_t imms = 31 - imm;
-                    emit32(&p, 0x53e00001 | (imms << 10));  // ubfm w1, w0, #0, #imms (lsl w1, w0, #imm)
+                    emit32(&p, 0x53007c01 | (imms << 10));  // ubfm w1, w0, #0, #imms (lsl w1, w0, #imm)
                     emit32(&p, 0x4b010000);  // sub w0, w0, w1
                 }
                 break;
