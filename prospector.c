@@ -401,21 +401,55 @@ emit_load_constant(unsigned char **buf, uint64_t constant, int is64)
 // If <imms> is less than <immr>, this copies a bitfield of (<imms>+1) bits from the least significant bits of the source register to bit position (regsize-<immr>) of the destination register, where regsize is the destination register size of 32 or 64 bits.
 // In both cases, the destination bits below and above the bitfield are set to zero.
 
-static uint32_t gen_lsl(uint32_t rd, uint32_t rn, uint32_t shift, bool is64) {
+static uint32_t gen_ubfm(uint32_t rd, uint32_t rn, uint32_t immr, uint32_t imms, bool is64) {
     assert(rd <= 30);
     assert(rn <= 30);
-    assert(shift <= 31);
-    uint32_t instr = is64 ? 0xd3400000 : 0x53000000;
-    instr |= rd;
-    instr |= rn << 5;
-    uint32_t immr, imms;
-    if (is64) {
-
-    } else {
-
-    }
-    instr |= imms << 10;
+    assert(immr <= 0b111111);
+    assert(imms <= 0b111111);
+    assert(is64 || (!(immr & (1 << 5)) && !(imms & (1 << 5))));
+    uint32_t instr = 0x53000000u;
+    instr |= (uint32_t)is64 << 31;
+    instr |= (uint32_t)!is64 << 22;
     instr |= immr << 16;
+    instr |= imms << 10;
+    instr |= rn << 5;
+    instr |= rd;
+    return instr;
+}
+
+
+static uint32_t gen_lsl(uint32_t rd, uint32_t rn, uint32_t shift, bool is64) {
+    const uint32_t nbits = is64 ? 64 : 32;
+    assert(rd <= 30);
+    assert(rn <= 30);
+    assert(shift < nbits);
+    uint32_t imms = nbits - 1 - shift;
+    uint32_t immr = imms - 1;
+    uint32_t instr = gen_ubfm(rd, rn, immr, imms, is64);
+    return instr;
+}
+
+static uint32_t gen_eor(uint32_t rd, uint32_t rn, uint32_t rm, bool is64) {
+    assert(rd <= 30);
+    assert(rn <= 30);
+    assert(rm <= 30);
+    uint32_t instr = 0x4a000000u;
+    instr |= (uint32_t)is64 << 31;
+    instr |= rm << 16;
+    instr |= rn << 5;
+    instr |= rd;
+    return instr;
+}
+
+
+static uint32_t gen_rev(uint32_t rd, uint32_t rn, bool is64) {
+    assert(rd <= 30);
+    assert(rn <= 30);
+    uint32_t instr = 0x5ac00800u;
+    instr |= (uint32_t)is64 << 31;
+    instr |= (uint32_t)is64 << 10;
+    instr |= rn << 5;
+    instr |= rd;
     return instr;
 }
 
@@ -435,10 +469,10 @@ hf_compile(const struct hf_op *ops, int n, unsigned char *buf)
                 emit32(&p, 0xaa2003e0);  // mvn x0, x0
                 break;
             case HF32_BSWAP:
-                emit32(&p, 0x5ac00800);  // rev32 w0, w0
+                emit32(&p, gen_rev(0, 0, false));  // rev w0, w0
                 break;
             case HF64_BSWAP:
-                emit32(&p, 0xdac00c00);  // rev64 x0, x0
+                emit32(&p, gen_rev(0, 0, true));  // rev64 x0, x0
                 break;
             case HF32_BREV:
                 emit32(&p, 0x5ac00000);  // rbit w0, w0
@@ -484,18 +518,14 @@ hf_compile(const struct hf_op *ops, int n, unsigned char *buf)
                 break;
             case HF32_XORL:
                 {
-                    uint32_t imm = ops[i].constant;
-                    uint32_t imms = 31 - imm;
-                    emit32(&p, 0x53007c01 | (imms << 10));  // ubfm w1, w0, #0, #imms (lsl w1, w0, #imm)
-                    emit32(&p, 0x4a010000);  // eor w0, w0, w1
+                    emit32(&p, gen_lsl(1, 0, ops[i].constant, false)); // lsl w1, w0, #imm
+                    emit32(&p, gen_eor(0, 0, 1, false)); // eor w0, w0, w1
                 }
                 break;
             case HF64_XORL:
                 {
-                    uint32_t imm = ops[i].constant;
-                    uint32_t imms = 63 - imm;
-                    emit32(&p, 0xd3e00001 | (imms << 10));  // ubfm x1, x0, #0, #imms (lsl x1, x0, #imm)
-                    emit32(&p, 0xca010000);  // eor x0, x0, x1
+                    emit32(&p, gen_lsl(1, 0, ops[i].constant, true)); // lsl x1, x0, #imm
+                    emit32(&p, gen_eor(0, 0, 1, true)); // eor x0, x0, x1
                 }
                 break;
             case HF32_XORR:
