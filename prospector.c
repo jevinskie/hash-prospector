@@ -409,7 +409,7 @@ static uint32_t gen_ubfm(uint32_t rd, uint32_t rn, uint32_t immr, uint32_t imms,
     assert(is64 || (!(immr & (1 << 5)) && !(imms & (1 << 5))));
     uint32_t instr = 0x53000000u;
     instr |= (uint32_t)is64 << 31;
-    instr |= (uint32_t)!is64 << 22;
+    instr |= (uint32_t)is64 << 22;
     instr |= immr << 16;
     instr |= imms << 10;
     instr |= rn << 5;
@@ -424,8 +424,18 @@ static uint32_t gen_lsl(uint32_t rd, uint32_t rn, uint32_t shift, bool is64) {
     assert(rn <= 30);
     assert(shift < nbits);
     uint32_t imms = nbits - 1 - shift;
-    uint32_t immr = imms - 1;
+    assert(imms != (0b011111 | ((uint32_t)is64 << 6)));
+    uint32_t immr = imms + 1;
     uint32_t instr = gen_ubfm(rd, rn, immr, imms, is64);
+    return instr;
+}
+
+static uint32_t gen_lsr(uint32_t rd, uint32_t rn, uint32_t shift, bool is64) {
+    const uint32_t nbits = is64 ? 64 : 32;
+    assert(rd <= 30);
+    assert(rn <= 30);
+    assert(shift < nbits);
+    uint32_t instr = gen_ubfm(rd, rn, shift, nbits - 1, is64);
     return instr;
 }
 
@@ -530,47 +540,37 @@ hf_compile(const struct hf_op *ops, int n, unsigned char *buf)
                 break;
             case HF32_XORR:
                 {
-                    uint32_t imm = ops[i].constant;
-                    emit32(&p, 0x53e07c01 | (imm << 16));  // ubfm w1, w0, #imm, #31 (lsr w1, w0, #imm)
-                    emit32(&p, 0x4a010000);  // eor w0, w0, w1
+                    emit32(&p, gen_lsr(1, 0, ops[i].constant, false)); // lsr w1, w0, #imm
+                    emit32(&p, gen_eor(0, 0, 1, false)); // eor w0, w0, w1
                 }
                 break;
             case HF64_XORR:
                 {
-                    uint32_t imm = ops[i].constant;
-                    emit32(&p, 0xd3e07c01 | (imm << 16));  // ubfm x1, x0, #imm, #63 (lsr x1, x0, #imm)
-                    emit32(&p, 0xca010000);  // eor x0, x0, x1
+                    emit32(&p, gen_lsr(1, 0, ops[i].constant, true)); // lsr x1, x0, #imm
+                    emit32(&p, gen_eor(0, 0, 1, true)); // eor x0, x0, x1
                 }
                 break;
             case HF32_ADDL:
                 {
-                    uint32_t imm = ops[i].constant;
-                    uint32_t imms = 31 - imm;
-                    emit32(&p, 0x53e00001 | (imms << 10));  // ubfm w1, w0, #0, #imms (lsl w1, w0, #imm)
+                    emit32(&p, gen_lsl(1, 0, ops[i].constant, false)); // lsl w1, w0, #imm
                     emit32(&p, 0x0b010000);  // add w0, w0, w1
                 }
                 break;
             case HF64_ADDL:
                 {
-                    uint32_t imm = ops[i].constant;
-                    uint32_t imms = 63 - imm;
-                    emit32(&p, 0xd3e00001 | (imms << 10));  // ubfm x1, x0, #0, #imms (lsl x1, x0, #imm)
+                    emit32(&p, gen_lsl(1, 0, ops[i].constant, true)); // lsl x1, x0, #imm
                     emit32(&p, 0x8b010000);  // add x0, x0, x1
                 }
                 break;
             case HF32_SUBL:
                 {
-                    uint32_t imm = ops[i].constant;
-                    uint32_t imms = 31 - imm;
-                    emit32(&p, 0x53007c01 | (imms << 10));  // ubfm w1, w0, #0, #imms (lsl w1, w0, #imm)
+                    emit32(&p, gen_lsl(1, 0, ops[i].constant, false)); // lsl w1, w0, #imm
                     emit32(&p, 0x4b010000);  // sub w0, w0, w1
                 }
                 break;
             case HF64_SUBL:
                 {
-                    uint32_t imm = ops[i].constant;
-                    uint32_t imms = 63 - imm;
-                    emit32(&p, 0xd3e00001 | (imms << 10));  // ubfm x1, x0, #0, #imms (lsl x1, x0, #imm)
+                    emit32(&p, gen_lsl(1, 0, ops[i].constant, true)); // lsl x1, x0, #imm
                     emit32(&p, 0xcb010000);  // sub x0, x0, x1
                 }
                 break;
