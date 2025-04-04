@@ -214,7 +214,6 @@ estimate_bias32(const struct hash *f, uint64_t rng[4])
 static double
 exact_bias32(const struct hash *f)
 {
-    int i; // declare here to work around Visual Studio issue
     long long bins[32][32] = {{0}};
     static const uint64_t range = (UINT64_C(1) << 32);
     #pragma omp parallel for reduction(+:bins[:32][:32])
