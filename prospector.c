@@ -1293,7 +1293,7 @@ main(int argc, char **argv)
 
         /* Evaluate */
         double score;
-        hf_printfunc(ops, nops, stdout);
+        // hf_printfunc(ops, nops, stdout);
         hf_compile(ops, nops, buf);
         execbuf_lock(buf);
         if (flags & F_U64) {
