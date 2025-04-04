@@ -4,10 +4,7 @@
  */
 #include <stdint.h>
 
-__attribute__((sysv_abi))
-uint64_t
-hash(uint64_t x)
-{
+__attribute__((sysv_abi)) uint64_t hash(uint64_t x) {
     x ^= x >> 32;
     x *= 0xd6e8feb86659fd93;
     x ^= x >> 32;
@@ -16,10 +13,7 @@ hash(uint64_t x)
     return x;
 }
 
-__attribute__((sysv_abi))
-uint64_t
-unhash(uint64_t x)
-{
+__attribute__((sysv_abi)) uint64_t unhash(uint64_t x) {
     x ^= x >> 32;
     x *= 0xcfee444d8b59a89b;
     x ^= x >> 32;
