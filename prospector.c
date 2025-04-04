@@ -976,7 +976,7 @@ exact_bias32(uint32_t ABI (*f)(uint32_t))
 {
     long long bins[32][32] = {{0}};
     static const uint64_t range = (UINT64_C(1) << 32);
-    #pragma omp parallel for reduction(+:bins[:32][:32]) num_threads(6)
+    #pragma omp parallel for reduction(+:bins[:32][:32])
     for (uint64_t x = 0; x < range; x++) {
         uint32_t h0 = f(x);
         for (int j = 0; j < 32; j++) {
