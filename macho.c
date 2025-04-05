@@ -148,7 +148,7 @@ void write_macho(const char *obj_path, const uint8_t *code, size_t code_sz, cons
     free(symtab);
 }
 
-#if 1
+#if 0
 // Example usage
 int main(void) {
     // Sample JIT-generated code (replace with actual code)
