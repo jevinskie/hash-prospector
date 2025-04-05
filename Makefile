@@ -1,5 +1,5 @@
 CC      := clang
-CFLAGS  := -std=gnu23 -Wall -Wextra -march=native -O3 -ggdb3 -fopenmp
+CFLAGS  := -flto=full -std=gnu23 -Wall -Wextra -march=native -O3 -ggdb3 -fopenmp
 LDFLAGS :=
 ifneq ($(shell uname -s),Darwin)
 LDLIBS  := -lm -ldl
