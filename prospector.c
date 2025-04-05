@@ -17,17 +17,17 @@
 #include <unistd.h>
 
 #ifndef __APPLE__
-#define ABI          __attribute__((sysv_abi))
+#define HF_ABI       __attribute__((sysv_abi))
 #define HF_PAGE_SIZE (4 * 1024)
 #else
-#define ABI
+#define HF_ABI
 #define HF_PAGE_SIZE (16 * 1024)
 #endif
 
 #ifdef __aarch64__
 #define HAVE_BREV 1
 #else
-#define HAVE_BREV
+#define HAVE_BREV 0
 #endif
 
 #define countof(a) ((int)(sizeof(a) / sizeof(0 [a])))
@@ -856,7 +856,7 @@ static int score_quality = 18;
 /* Measures how each input bit affects each output bit. This measures
  * both bias and avalanche.
  */
-static double estimate_bias32(uint32_t ABI (*f)(uint32_t), uint64_t rng[2]) {
+static double estimate_bias32(uint32_t HF_ABI (*f)(uint32_t), uint64_t rng[2]) {
     long n            = 1L << score_quality;
     long bins[32][32] = {{0}};
     for (long i = 0; i < n; i++) {
@@ -881,7 +881,7 @@ static double estimate_bias32(uint32_t ABI (*f)(uint32_t), uint64_t rng[2]) {
     return sqrt(mean) * 1000.0;
 }
 
-static double estimate_bias64(uint64_t ABI (*f)(uint64_t), uint64_t rng[2]) {
+static double estimate_bias64(uint64_t HF_ABI (*f)(uint64_t), uint64_t rng[2]) {
     long n            = 1L << score_quality;
     long bins[64][64] = {{0}};
     for (long i = 0; i < n; i++) {
@@ -906,7 +906,7 @@ static double estimate_bias64(uint64_t ABI (*f)(uint64_t), uint64_t rng[2]) {
     return sqrt(mean) * 1000.0;
 }
 
-static double exact_bias32(uint32_t ABI (*f)(uint32_t)) {
+static double exact_bias32(uint32_t HF_ABI (*f)(uint32_t)) {
     long long bins[32][32]      = {{0}};
     static const uint64_t range = (UINT64_C(1) << 32);
     // clang-format off
@@ -1146,13 +1146,13 @@ int main(int argc, char **argv) {
         uint64_t nhash;
         uint64_t beg = uepoch();
         if (flags & F_U64) {
-            uint64_t ABI (*hash)(uint64_t) = hashptr;
+            uint64_t HF_ABI (*hash)(uint64_t) = hashptr;
             if (use_exact)
                 fputs("warning: no exact bias for 64-bit\n", stderr);
             bias  = estimate_bias64(hash, rng);
             nhash = (1L << score_quality) * 33;
         } else {
-            uint32_t ABI (*hash)(uint32_t) = hashptr;
+            uint32_t HF_ABI (*hash)(uint32_t) = hashptr;
             if (use_exact) {
                 bias  = exact_bias32(hash);
                 nhash = (1LL << 32) * 33;
@@ -1182,14 +1182,14 @@ int main(int argc, char **argv) {
         }
 
         if (flags & F_U64) {
-            uint64_t ABI (*hash)(uint64_t) = hashptr;
-            uint64_t i                     = 0;
+            uint64_t HF_ABI (*hash)(uint64_t) = hashptr;
+            uint64_t i                        = 0;
             do
                 printf("%016llx %016llx\n", (unsigned long long)i, (unsigned long long)hash(i));
             while (++i);
         } else {
-            uint32_t ABI (*hash)(uint32_t) = hashptr;
-            uint32_t i                     = 0;
+            uint32_t HF_ABI (*hash)(uint32_t) = hashptr;
+            uint32_t i                        = 0;
             do
                 printf("%08lx %08lx\n", (unsigned long)i, (unsigned long)hash(i));
             while (++i);
@@ -1212,11 +1212,11 @@ int main(int argc, char **argv) {
         hf_compile(ops, nops, buf);
         execbuf_lock(buf);
         if (flags & F_U64) {
-            uint64_t ABI (*hash)(uint64_t) = (void *)buf;
-            score                          = estimate_bias64(hash, rng);
+            uint64_t HF_ABI (*hash)(uint64_t) = (void *)buf;
+            score                             = estimate_bias64(hash, rng);
         } else {
-            uint32_t ABI (*hash)(uint32_t) = (void *)buf;
-            score                          = estimate_bias32(hash, rng);
+            uint32_t HF_ABI (*hash)(uint32_t) = (void *)buf;
+            score                             = estimate_bias32(hash, rng);
         }
         execbuf_unlock(buf);
 

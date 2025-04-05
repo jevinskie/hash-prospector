@@ -18,3 +18,4 @@ AllowShortLoopsOnASingleLine: false
 AlignConsecutiveAssignments: Consecutive
 AlignConsecutiveMacros: AcrossEmptyLinesAndComments
 AlignEscapedNewlines: LeftWithLastLine
+AttributeMacros: [HF_ABI]
