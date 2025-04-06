@@ -79,6 +79,15 @@ enum hf_type {
 #endif
 };
 
+#if HAVE_BREV
+#define HF_NUM_OPS 10
+#else
+#define HF_NUM_OPS 9
+#endif
+
+static_assert(HF_NUM_OPS == HF32_LAST);
+static_assert(HF_NUM_OPS == HF64_LAST - (HF32_LAST + 1));
+
 // clang-format off
 static const char hf_names[][8] = {
     [HF32_XOR]  = "32xor",
@@ -110,12 +119,6 @@ static const char hf_names[][8] = {
 };
 // clang-format on
 
-#if HAVE_BREV
-#define HF_NUM_OPS 10
-#else
-#define HF_NUM_OPS 9
-#endif
-
 #define FOP_LOCKED (1 << 0)
 struct hf_op {
     enum hf_type type;
@@ -146,8 +149,7 @@ static void hf_jit_flush(void *buf, size_t sz) {}
 
 /* Randomize the constants of the given hash operation.
  */
-static void hf_randomize(struct hf_op *op, uint64_t s[2]) {
-    uint64_t r = xoroshiro128plus(s);
+static void hf_fixup_op_const(struct hf_op *op, uint64_t n) {
     switch (op->type) {
     case HF32_NOT:
     case HF64_NOT:
@@ -161,33 +163,40 @@ static void hf_randomize(struct hf_op *op, uint64_t s[2]) {
         break;
     case HF32_XOR:
     case HF32_ADD:
-        op->constant = (uint32_t)r;
+        op->constant = (uint32_t)n;
         break;
     case HF32_MUL:
-        op->constant = (uint32_t)r | 1;
+        op->constant = (uint32_t)n | 1;
         break;
     case HF32_ROT:
     case HF32_XORL:
     case HF32_XORR:
     case HF32_ADDL:
     case HF32_SUBL:
-        op->constant = 1 + r % 31;
+        op->constant = 1 + (n % 31);
         break;
     case HF64_XOR:
     case HF64_ADD:
-        op->constant = r;
+        op->constant = n;
         break;
     case HF64_MUL:
-        op->constant = r | 1;
+        op->constant = n | 1;
         break;
     case HF64_ROT:
     case HF64_XORL:
     case HF64_XORR:
     case HF64_ADDL:
     case HF64_SUBL:
-        op->constant = 1 + r % 63;
+        op->constant = 1 + (n % 63);
         break;
     }
+}
+
+/* Randomize the constants of the given hash operation.
+ */
+static void hf_randomize(struct hf_op *op, uint64_t s[2]) {
+    uint64_t r = xoroshiro128plus(s);
+    hf_fixup_op_const(op, r);
 }
 
 #define F_U64  (1 << 0)
@@ -798,7 +807,8 @@ static enum {
     WXR_DISABLED
 } wxr_enabled = WXR_UNKNOWN;
 
-static void execbuf_lock(void *buf) {
+static void execbuf_lock(void *buf, size_t sz) {
+    (void)sz;
     switch (wxr_enabled) {
     case WXR_UNKNOWN:
         if (!mprotect(buf, HF_PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC)) {
@@ -818,13 +828,13 @@ static void execbuf_lock(void *buf) {
     }
 }
 #else
-static void execbuf_lock(void *buf) {
+static void execbuf_lock(void *buf, size_t sz) {
     if (mprotect(buf, HF_PAGE_SIZE, PROT_READ | PROT_EXEC)) {
         fprintf(stderr, "prospector: mprotect(PROT_EXEC) failed: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
     hf_jit_exec();
-    hf_jit_flush(buf, HF_PAGE_SIZE);
+    hf_jit_flush(buf, sz);
 }
 #endif
 
@@ -934,7 +944,7 @@ static double exact_bias32(uint32_t HF_ABI (*f)(uint32_t)) {
 
 static void usage(FILE *f) {
     fprintf(f, "usage: prospector "
-               "[-E|L|S] [-4|-8] [-ehs] [-l lib] [-p pattern] [-r n:m] [-t x]\n");
+               "[-E|L|S] [-4|-8] [-ehs] [-l lib] [-p pattern] [-r n:m] [-t x] [-D dumpobj]\n");
     fprintf(f, " -4          Generate 32-bit hash functions (default)\n");
     fprintf(f, " -8          Generate 64-bit hash functions\n");
     fprintf(f, " -e          Measure bias exactly (requires -E)\n");
@@ -948,6 +958,7 @@ static void usage(FILE *f) {
     fprintf(f, " -E          Single evaluation mode (requires -p or -l)\n");
     fprintf(f, " -S          Hash function search mode (default)\n");
     fprintf(f, " -L          Enumerate output mode (requires -p or -l)\n");
+    fprintf(f, " -D ./dump.o Dump JIT templates to file\n");
 }
 
 static int parse_operand(struct hf_op *op, char *buf) {
@@ -1028,6 +1039,30 @@ static void *load_function(const char *so) {
     return f;
 }
 
+#ifndef __APPLE__
+static void dump_jit_templates(char *dump_path, unsigned char *buf) {
+    fprintf(stderr, "not implemented on non-Apple\n");
+}
+#else
+
+#include "macho.c"
+
+static void dump_jit_templates(char *dump_path, unsigned char *buf) {
+    struct hf_op ops[4 * (2 * HF_NUM_OPS)] = {};
+    for (int i = 0; i < countof(ops); ++i) {
+        ops[i].type = i % (2 * HF_NUM_OPS);
+        hf_fixup_op_const(&ops[i], i * 4);
+    }
+    unsigned char *end_p = hf_compile(ops, countof(ops), buf);
+    const size_t code_sz = (uintptr_t)end_p - (uintptr_t)buf;
+    const sym_t syms[]   = {
+        {"_main", 0},
+    };
+    write_macho(dump_path, buf, code_sz, syms, countof(syms));
+}
+
+#endif
+
 static uint64_t uepoch(void) {
     struct timeval tv;
     gettimeofday(&tv, NULL);
@@ -1035,14 +1070,15 @@ static uint64_t uepoch(void) {
 }
 
 int main(int argc, char **argv) {
-    int nops       = 0;
-    int min        = 3;
-    int max        = 6;
-    int flags      = 0;
-    int use_exact  = 0;
-    double best    = 100.0;
-    char *dynamic  = 0;
-    char *template = 0;
+    int nops        = 0;
+    int min         = 3;
+    int max         = 6;
+    int flags       = 0;
+    int use_exact   = 0;
+    double best     = 100.0;
+    char *dynamic   = NULL;
+    char *template  = NULL;
+    char *dump_path = NULL;
     struct hf_op ops[32];
     void *buf       = execbuf_alloc();
     uint64_t rng[2] = {0x2a2bc037b59ff989, 0x6d7db86fa2f632ca};
@@ -1054,7 +1090,7 @@ int main(int argc, char **argv) {
     } mode = MODE_SEARCH;
 
     int option;
-    while ((option = getopt(argc, argv, "48EehLl:q:r:st:p:")) != -1) {
+    while ((option = getopt(argc, argv, "48EehLl:q:r:st:p:D:")) != -1) {
         switch (option) {
         case '4':
             flags &= ~F_U64;
@@ -1104,6 +1140,9 @@ int main(int argc, char **argv) {
         case 't':
             best = strtod(optarg, 0);
             break;
+        case 'D':
+            dump_path = optarg;
+            break;
         default:
             usage(stderr);
             exit(EXIT_FAILURE);
@@ -1120,6 +1159,11 @@ int main(int argc, char **argv) {
         fclose(urandom);
     }
 
+    if (dump_path) {
+        dump_jit_templates(dump_path, buf);
+        exit(EXIT_SUCCESS);
+    }
+
     if (template) {
         nops = parse_template(ops, countof(ops), template, flags);
         if (!nops) {
@@ -1133,8 +1177,9 @@ int main(int argc, char **argv) {
         void *hashptr = 0;
         if (template) {
             hf_randfunc(ops, nops, rng);
-            hf_compile(ops, nops, buf);
-            execbuf_lock(buf);
+            unsigned char *end_p = hf_compile(ops, nops, buf);
+            const size_t code_sz = (uintptr_t)end_p - (uintptr_t)buf;
+            execbuf_lock(buf, code_sz);
             hashptr = buf;
         } else if (dynamic) {
             hashptr = load_function(dynamic);
@@ -1171,8 +1216,9 @@ int main(int argc, char **argv) {
         void *hashptr = 0;
         if (template) {
             hf_randfunc(ops, nops, rng);
-            hf_compile(ops, nops, buf);
-            execbuf_lock(buf);
+            unsigned char *end_p = hf_compile(ops, nops, buf);
+            const size_t code_sz = (uintptr_t)end_p - (uintptr_t)buf;
+            execbuf_lock(buf, code_sz);
             hashptr = buf;
         } else if (dynamic) {
             hashptr = load_function(dynamic);
@@ -1209,8 +1255,9 @@ int main(int argc, char **argv) {
         /* Evaluate */
         double score;
         // hf_printfunc(ops, nops, stdout);
-        hf_compile(ops, nops, buf);
-        execbuf_lock(buf);
+        unsigned char *end_p = hf_compile(ops, nops, buf);
+        const size_t code_sz = (uintptr_t)end_p - (uintptr_t)buf;
+        execbuf_lock(buf, code_sz);
         if (flags & F_U64) {
             uint64_t HF_ABI (*hash)(uint64_t) = (void *)buf;
             score                             = estimate_bias64(hash, rng);

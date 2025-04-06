@@ -19,8 +19,8 @@ typedef struct {
  * @param syms      Array of symbols to include in the symbol table
  * @param num_syms  Number of symbols in the array
  */
-void write_macho(const char *obj_path, const uint8_t *code, size_t code_sz, const sym_t *syms,
-                 size_t num_syms) {
+static void write_macho(const char *obj_path, const uint8_t *code, size_t code_sz,
+                        const sym_t *syms, size_t num_syms) {
     // Validate code size
     if (code_sz > 0x4000) { // 16 KB
         fprintf(stderr, "Code size exceeds 16 KB\n");
